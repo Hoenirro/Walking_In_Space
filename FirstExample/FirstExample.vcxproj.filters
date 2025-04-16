@@ -68,5 +68,8 @@
     <Image Include="grass.png">
       <Filter>Texture_Images</Filter>
     </Image>
+    <Image Include="enemy.png">
+      <Filter>Texture_Images</Filter>
+    </Image>
   </ItemGroup>
 </Project>

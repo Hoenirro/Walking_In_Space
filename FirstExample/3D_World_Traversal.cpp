@@ -20,7 +20,8 @@ enum GameObject_Type {
     PLAYER,
     ENEMY,
     BULLET,
-    OBSTACLE
+    OBSTACLE,
+    ENEMY_BULLET
 };
 
 struct GameObject {
@@ -35,6 +36,7 @@ struct GameObject {
     int type;
     bool isAlive;
     bool isCollided;
+    int shoot_timer;
 };
 
 enum VAO_IDs { Triangles, NumVAOs };
@@ -47,14 +49,14 @@ GLuint Buffers[NumBuffers];
 GLuint location;
 GLuint cam_mat_location;
 GLuint proj_mat_location;
-GLuint texture[2];
+GLuint texture[3];
 
 const GLuint NumVertices = 28;
 
 // Camera and movement variables
 float ground_height = 0.8f;
 float crouch_height = 0.4f;
-float gravity = -15.0f;
+float gravity = -15.0f; 
 float jump_velocity = 6.0f;
 float vertical_velocity = 0.0f;
 bool is_jumping = false;
@@ -69,13 +71,18 @@ float mouse_sensitivity = 0.01f;
 float player_collider_size = 0.5f;
 glm::vec3 movement_direction(0.0f);
 
-bool moving_forward = false;         // Add these to track key states
+bool moving_forward = false;
 bool moving_backward = false;
 bool moving_left = false;
 bool moving_right = false;
 
 int x0 = 0;
 int y_0 = 0;
+
+// globals
+int health = 10;
+int countdown = 30;
+int totalTime = 0;
 
 glm::mat4 model_view;
 glm::vec3 unit_z_vector = glm::vec3(0, 0, 1);
@@ -107,6 +114,7 @@ void init(void)
     looking_dir_vector = glm::normalize(looking_dir_vector);
     side_vector = glm::normalize(side_vector);
 
+    // half enemies (move and shoot) half obstacles (not moving)
     for (int i = 0; i < Num_Obstacles; i++)
     {
         obstacle_data[i][0] = randomFloat(-50, 50);
@@ -121,10 +129,11 @@ void init(void)
         go.isAlive = true;
         go.living_time = 0;
         go.isCollided = false;
-        go.velocity = 2.0f;
-        go.type = OBSTACLE;
+        go.velocity = (i < Num_Obstacles / 2) ? 0.5f : 0.0f;
+        go.type = (i < Num_Obstacles / 2) ? ENEMY : OBSTACLE;
         go.moving_direction = glm::vec3(0, 0, 0);
         go.life_span = -1;
+        go.shoot_timer = (i < Num_Obstacles / 2) ? rand() % 2000 : 0;
         sceneGraph.push_back(go);
     }
 
@@ -161,6 +170,8 @@ void init(void)
     unsigned char* textureData1 = SOIL_load_image("grass.png", &width1, &height1, 0, SOIL_LOAD_RGB);
     GLint width2, height2;
     unsigned char* textureData2 = SOIL_load_image("apple.png", &width2, &height2, 0, SOIL_LOAD_RGB);
+    GLint width3, height3;
+    unsigned char* textureData3 = SOIL_load_image("enemy.png", &width3, &height3, 0, SOIL_LOAD_RGB);
 
     glGenBuffers(2, Buffers);
     glBindBuffer(GL_ARRAY_BUFFER, Buffers[0]);
@@ -193,13 +204,29 @@ void init(void)
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+    glBindTexture(GL_TEXTURE_2D, texture[2]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width3, height3, 0, GL_RGB, GL_UNSIGNED_BYTE, textureData3);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+    SOIL_free_image_data(textureData1);
+    SOIL_free_image_data(textureData2);
+    SOIL_free_image_data(textureData3);
 }
 
-void drawCube(glm::vec3 scale)
+void drawCube(glm::vec3 scale, int type)
 {
     model_view = glm::scale(model_view, scale);
     glUniformMatrix4fv(location, 1, GL_FALSE, &model_view[0][0]);
-    glBindTexture(GL_TEXTURE_2D, texture[1]);
+    if (type == ENEMY) {
+        glBindTexture(GL_TEXTURE_2D, texture[2]); // Use Enemy.png for enemies
+    }
+    else {
+        glBindTexture(GL_TEXTURE_2D, texture[1]); // Use apple.png for others
+    }
     glDrawArrays(GL_QUADS, 4, 24);
 }
 
@@ -212,11 +239,39 @@ bool isColliding(GameObject one, GameObject two) {
 void checkCollisions() {
     for (int i = 0; i < sceneGraph.size(); i++) {
         for (int j = 0; j < sceneGraph.size(); j++) {
-            if (i != j && sceneGraph[i].isAlive && sceneGraph[j].isAlive &&
-                !(sceneGraph[i].type == OBSTACLE && sceneGraph[j].type == OBSTACLE) &&
-                isColliding(sceneGraph[i], sceneGraph[j])) {
-                sceneGraph[i].isCollided = true;
-                sceneGraph[j].isCollided = true;
+            if (i != j && sceneGraph[i].isAlive && sceneGraph[j].isAlive) {
+                // Skip collisions between ENEMY-ENEMY, OBSTACLE-OBSTACLE, ENEMY-OBSTACLE, BULLET-BULLET, ENEMY_BULLET-ENEMY_BULLET
+                if ((sceneGraph[i].type == ENEMY && sceneGraph[j].type == ENEMY) ||
+                    (sceneGraph[i].type == OBSTACLE && sceneGraph[j].type == OBSTACLE) ||
+                    (sceneGraph[i].type == ENEMY && sceneGraph[j].type == OBSTACLE) ||
+                    (sceneGraph[i].type == OBSTACLE && sceneGraph[j].type == ENEMY) ||
+                    (sceneGraph[i].type == BULLET && sceneGraph[j].type == BULLET) ||
+                    (sceneGraph[i].type == ENEMY_BULLET && sceneGraph[j].type == ENEMY_BULLET)) {
+                    continue;
+                }
+                if (isColliding(sceneGraph[i], sceneGraph[j])) {
+                    // BULLET-ENEMY: destroy both
+                    if ((sceneGraph[i].type == BULLET && sceneGraph[j].type == ENEMY) ||
+                        (sceneGraph[i].type == ENEMY && sceneGraph[j].type == BULLET)) {
+                        sceneGraph[i].isAlive = false;
+                        sceneGraph[j].isAlive = false;
+                    }
+                    // BULLET-ENEMY_BULLET: destroy both
+                    else if ((sceneGraph[i].type == BULLET && sceneGraph[j].type == ENEMY_BULLET) ||
+                        (sceneGraph[i].type == ENEMY_BULLET && sceneGraph[j].type == BULLET)) {
+                        sceneGraph[i].isAlive = false;
+                        sceneGraph[j].isAlive = false;
+                    }
+                    // ENEMY_BULLET-PLAYER or PLAYER-ENEMY: mark as collided
+                    else if ((sceneGraph[i].type == ENEMY_BULLET && sceneGraph[j].type == PLAYER) ||
+                        (sceneGraph[i].type == PLAYER && sceneGraph[j].type == ENEMY_BULLET) ||
+                        (sceneGraph[i].type == PLAYER && sceneGraph[j].type == ENEMY) ||
+                        (sceneGraph[i].type == ENEMY && sceneGraph[j].type == PLAYER)) {
+                        sceneGraph[i].isCollided = true;
+                        sceneGraph[i].isAlive = false;
+                        sceneGraph[j].isCollided = true;
+                    }
+                }
             }
         }
     }
@@ -230,14 +285,37 @@ void updateSceneGraph() {
             go.isAlive = false;
         }
         if (go.isAlive) {
-            if (go.type == OBSTACLE) {
-                // Calculate direction toward the player
+            if (go.type == ENEMY) {
+                // Enemy logic: move toward player and shoot
                 go.moving_direction = glm::normalize(cam_pos - go.location);
-                // Update position based on velocity and direction
                 go.location += ((GLfloat)deltaTime / 1000.0f) * go.velocity * go.moving_direction;
+
+                // Shooting logic for enemies
+                go.shoot_timer += deltaTime;
+                if (go.shoot_timer >= 2000) { // Shoot every 2 seconds
+                    GameObject bullet;
+                    bullet.location = go.location;
+                    bullet.rotation = glm::vec3(0, 0, 0);
+                    bullet.scale = glm::vec3(0.07, 0.07, 0.07);
+                    bullet.collider_dimension = bullet.scale.x;
+                    bullet.isAlive = true;
+                    bullet.living_time = 0;
+                    bullet.isCollided = false;
+                    bullet.velocity = 0.015f;
+                    bullet.type = ENEMY_BULLET;
+                    bullet.moving_direction = glm::normalize(cam_pos - go.location);
+                    bullet.life_span = 4000;
+                    bullet.shoot_timer = 0;
+                    sceneGraph.push_back(bullet);
+                    go.shoot_timer = 0;
+                }
+            }
+            else if (go.type == OBSTACLE) {
+                // Obstacles are static
+                go.moving_direction = glm::vec3(0, 0, 0);
             }
             else if (go.life_span > 0 && go.living_time < go.life_span) {
-                // Existing logic for bullets (unchanged)
+                // Bullet movement
                 go.location += ((GLfloat)deltaTime) * go.velocity * glm::normalize(go.moving_direction);
                 go.living_time += deltaTime;
             }
@@ -280,7 +358,7 @@ void updatePhysics()
     glm::vec3 new_pos = cam_pos + movement_direction * current_speed * dt;
     bool collision = false;
     for (const auto& obj : sceneGraph) {
-        if (obj.isAlive && obj.type == OBSTACLE) {
+        if (obj.isAlive && (obj.type == OBSTACLE || obj.type == ENEMY)) {
             float distance = glm::length(new_pos - obj.location);
             if (distance < (player_collider_size + obj.collider_dimension / 2)) {
                 collision = true;
@@ -307,14 +385,21 @@ void draw_level()
             model_view = glm::rotate(model_view, 0.0f, unit_z_vector);
             glUniformMatrix4fv(location, 1, GL_FALSE, &model_view[0][0]);
 
-            if (go.type == OBSTACLE || go.type == BULLET) {
-                drawCube(go.scale);
+            if (go.type == OBSTACLE || go.type == ENEMY || go.type == BULLET || go.type == ENEMY_BULLET) {
+                drawCube(go.scale, go.type);
             }
 
             model_view = glm::mat4(1.0);
             glUniformMatrix4fv(location, 1, GL_FALSE, &model_view[0][0]);
         }
     }
+}
+
+void renderBitmapString(float x, float y, void* font, const char* string) {
+    /*glRasterPos2f(x, y);
+    for (const char* c = string; *c != '\0'; c++) {
+        glutBitmapCharacter(font, *c);
+    }*/
 }
 
 void display(void)
@@ -332,6 +417,39 @@ void display(void)
     glUniformMatrix4fv(proj_mat_location, 1, GL_FALSE, &proj_matrix[0][0]);
 
     draw_level();
+
+    // ----------- START: Draw 2D HUD Text -------------
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(0.0, 1024.0, 0.0, 1024.0);  // Match your window size
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);
+    glColor3f(1.0f, 0.0f, 0.0f);  // Red text
+
+    // Health: top-right (with padding)
+    char healthStr[20];
+    sprintf(healthStr, "Health: %d", health);
+    renderBitmapString(850.0f, 990.0f, GLUT_BITMAP_HELVETICA_18, healthStr);
+
+    // Timer: top-center
+    char timerStr[20];
+    sprintf(timerStr, "Time: %d", countdown);
+    renderBitmapString(480.0f, 990.0f, GLUT_BITMAP_HELVETICA_18, timerStr);
+
+    glEnable(GL_DEPTH_TEST);
+
+    // Restore matrices
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    // ----------- END: Draw 2D HUD Text -------------
+
+
     glFlush();
 }
 
@@ -431,6 +549,13 @@ void idle()
     int timeSinceStart = glutGet(GLUT_ELAPSED_TIME);
     deltaTime = timeSinceStart - oldTimeSinceStart;
     oldTimeSinceStart = timeSinceStart;
+
+    totalTime += deltaTime;
+    if (totalTime >= 1000) {
+        totalTime -= 1000;
+        if (countdown > 0) countdown--;
+    }
+
     updatePhysics();
     glutPostRedisplay();
 }
